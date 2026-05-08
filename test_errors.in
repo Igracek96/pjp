@@ -1,0 +1,4 @@
+write "<Testing errors>";
+
+write "4) mod used with float";
+write "20 mod 3.0: ", 20 % 3.0;
