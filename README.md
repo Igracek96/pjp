@@ -1,28 +1,47 @@
 # PLC Compiler
 
-Překladač a interpret jednoduchého programovacího jazyka implementovaný v Pythonu.
+Překladač a interpret jednoduchého programovacího jazyka implementovaný v Pythonu s použitím ANTLR4.
 Školní projekt na VŠB-TUO, předmět Překladače (PLC).
+
+## Požadavky
+
+- Python 3.x
+- `antlr4-python3-runtime` (`pip install antlr4-python3-runtime`)
+- Java + ANTLR4 JAR (pouze pro regeneraci gramatiky)
 
 ## Spuštění
 
 ```bash
-python3 main.py program.txt
+# Kompilace a okamžité spuštění
+python3 main.py program.plc
+
+# Pouze kompilace do souboru instrukcí
+python3 main.py --compile program.plc    # → program.ins
+
+# Spuštění existujícího souboru instrukcí
+python3 main.py --run program.ins
+```
+
+## Regenerace ANTLR souborů
+
+```bash
+java -jar antlr-4.13.2-complete.jar -Dlanguage=Python3 -visitor -no-listener PLC.g4
 ```
 
 ## Architektura
 
 ```
-zdrojový kód
+zdrojový kód (.plc)
       ↓
-  lexer.py       – text → tokeny
+  ANTLR4 (PLCLexer + PLCParser)  – text → parse tree
       ↓
-  parser.py      – tokeny → AST (strom programu)
+  ast_builder.py   – parse tree → AST (náš strom)
       ↓
-  typechecker.py – kontrola typů, přejmenování proměnných
+  typechecker.py   – kontrola typů, konverze int→float
       ↓
-  codegen.py     – AST → instrukce zásobníkového stroje
+  codegen.py       – AST → instrukce zásobníkového stroje
       ↓
-  interpreter.py – vykonání instrukcí
+  interpreter.py   – vykonání instrukcí
 ```
 
 ## Podporovaný jazyk
@@ -40,47 +59,33 @@ while (a < 10) { ... } // smyčka
 { ... }                // blok (vlastní scope)
 ```
 
-**Operátory:**
-- Aritmetické: `+`, `-`, `*`, `/`, `%`
-- Řetězcové: `.` (konkatenace)
-- Porovnávací: `<`, `>`, `==`, `!=`
-- Logické: `&&`, `||`, `!`
-- Přiřazení: `=` (pravá asociativita, řetězení: `a = b = 5`)
+**Operátory (od nejvyšší priority):**
+- `*`, `/`, `%` – násobení, dělení, modulo
+- `+`, `-`, `.` – sčítání, odčítání, konkatenace
+- `<`, `>` – porovnání
+- `==`, `!=` – rovnost
+- `&&` – logický AND
+- `||` – logický OR
+- `=` – přiřazení (pravá asociativita)
 
 **Typová pravidla:**
 - Automatická konverze `int → float` (např. `1.5 + 3` = `4.5`)
 - Konverze `float → int` není povolena
 
-## Příklad programu
-
-```
-int i;
-while (i < 5) {
-    write "i = ", i;
-    i = i + 1;
-}
-```
-
-Výstup:
-```
-i = 0
-i = 1
-i = 2
-i = 3
-i = 4
-```
-
 ## Soubory
 
 | Soubor | Popis |
 |---|---|
-| `main.py` | Vstupní bod, pipeline |
-| `lexer.py` | Lexer – text na tokeny |
-| `parser.py` | Recursive descent parser |
+| `PLC.g4` | ANTLR4 gramatika (lexer + parser) |
+| `PLCLexer.py` | Vygenerovaný lexer (ANTLR) |
+| `PLCParser.py` | Vygenerovaný parser (ANTLR) |
+| `PLCVisitor.py` | Vygenerovaný visitor (ANTLR) |
+| `ast_builder.py` | Převod parse tree → AST |
 | `ast_nodes.py` | Definice uzlů AST stromu |
 | `typechecker.py` | Typová kontrola + správa scopů |
 | `codegen.py` | Generátor instrukcí |
 | `interpreter.py` | Zásobníkový stroj |
+| `main.py` | Vstupní bod, pipeline |
 | `DOKUMENTACE.md` | Detailní vysvětlení celého kódu |
 
 ## Testování
