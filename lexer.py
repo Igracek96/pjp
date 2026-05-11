@@ -26,7 +26,8 @@ class LexerError(Exception):
 
 class Lexer:
     def __init__(self, source: str):
-        self.source = source
+        # Strip BOM if present (some editors add it to UTF-8 files)
+        self.source = source.lstrip('\ufeff')
         self.pos = 0
         self.line = 1
 
@@ -50,21 +51,6 @@ class Lexer:
                     self.pos += 1
                 continue
 
-            # Block comment /* ... */
-            if ch == "/" and self.pos + 1 < len(self.source) and self.source[self.pos + 1] == "*":
-                self.pos += 2
-                start_line = self.line
-                while self.pos + 1 < len(self.source):
-                    if self.source[self.pos] == "\n":
-                        self.line += 1
-                    if self.source[self.pos] == "*" and self.source[self.pos + 1] == "/":
-                        self.pos += 2
-                        break
-                    self.pos += 1
-                else:
-                    raise LexerError(f"Line {start_line}: unterminated block comment")
-                continue
-
             # String literal
             if ch == '"':
                 tokens.append(self._read_string())
@@ -75,8 +61,8 @@ class Lexer:
                 tokens.append(self._read_number())
                 continue
 
-            # Identifier or keyword
-            if ch.isalpha() or ch == "_":
+            # Identifier or keyword (letters and digits only, must start with letter)
+            if ch.isalpha():
                 tokens.append(self._read_ident())
                 continue
 
