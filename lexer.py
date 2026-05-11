@@ -147,7 +147,7 @@ class Lexer:
     def _read_ident(self) -> Token:
         line = self.line
         start = self.pos
-        while self.pos < len(self.source) and (self.source[self.pos].isalnum() or self.source[self.pos] == "_"):
+        while self.pos < len(self.source) and self.source[self.pos].isalnum():
             self.pos += 1
         word = self.source[start:self.pos]
         if word in KEYWORDS:

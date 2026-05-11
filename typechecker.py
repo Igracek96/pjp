@@ -1,6 +1,7 @@
 """Type checker: walks the AST, resolves types, inserts int->float conversions.
-Also mangles variable names to handle nested scopes (e.g. y -> y$1)."""
+Reports ALL type errors (does not stop at first)."""
 
+import sys
 from ast_nodes import (
     Program, VarDecl, Assign, BinOp, UnaryOp, IntToFloat, If, While,
     Block, Read, Write, Var, IntLit, FloatLit, BoolLit, StrLit, Empty, ExprStmt,
@@ -8,16 +9,14 @@ from ast_nodes import (
 
 
 class TypeError_(Exception):
-    """Named with underscore to avoid shadowing builtin TypeError."""
     pass
 
 
 class ScopeManager:
-    """Manages nested variable scopes with unique name mangling."""
+    """Manages nested variable scopes. Shadowing (redeclaration in any scope) is forbidden."""
 
     def __init__(self):
-        self.scopes = [{}]        # each scope: name -> (mangled_name, type)
-        self.var_counter = 0      # for generating unique mangled names
+        self.scopes = [{}]    # stack of dicts: name -> type
 
     def enter(self):
         self.scopes.append({})
@@ -25,18 +24,15 @@ class ScopeManager:
     def exit(self):
         self.scopes.pop()
 
-    def declare(self, name: str, var_type: str) -> str:
-        """Declare variable, return its mangled name."""
-        current = self.scopes[-1]
-        if name in current:
-            raise TypeError_(f"Variable '{name}' already declared in this scope")
-        mangled = f"{name}${self.var_counter}"
-        self.var_counter += 1
-        current[name] = (mangled, var_type)
-        return mangled
+    def declare(self, name: str, var_type: str):
+        # Redeclaration in ANY active scope is an error
+        for scope in self.scopes:
+            if name in scope:
+                raise TypeError_(f"Variable '{name}' already declared")
+        self.scopes[-1][name] = var_type
 
-    def lookup(self, name: str):
-        """Returns (mangled_name, type). Searches from innermost scope."""
+    def lookup(self, name: str) -> str:
+        """Returns type. Searches from innermost scope outward."""
         for scope in reversed(self.scopes):
             if name in scope:
                 return scope[name]
@@ -46,9 +42,14 @@ class ScopeManager:
 class TypeChecker:
     def __init__(self):
         self.scope = ScopeManager()
+        self.errors = []
 
     def check(self, node: Program):
         self.visit(node)
+        if self.errors:
+            for err in self.errors:
+                print(f"Type error: {err}", file=sys.stderr)
+            raise TypeError_("Type checking failed")
 
     def visit(self, node):
         method = f"visit_{type(node).__name__}"
@@ -57,59 +58,67 @@ class TypeChecker:
             raise TypeError_(f"No visitor for {type(node).__name__}")
         return visitor(node)
 
+    def _safe_visit(self, node):
+        """Visit a node, catching TypeError_ and collecting it instead of propagating."""
+        try:
+            return self.visit(node)
+        except TypeError_ as e:
+            self.errors.append(str(e))
+            return None
+
     def visit_Program(self, node: Program):
         for stmt in node.statements:
-            self.visit(stmt)
+            self._safe_visit(stmt)
 
     def visit_ExprStmt(self, node: ExprStmt):
-        self.visit(node.expr)
+        self._safe_visit(node.expr)
 
     def visit_Empty(self, node: Empty):
         pass
 
     def visit_VarDecl(self, node: VarDecl):
-        # Replace original names with mangled names in the AST
-        mangled_names = []
         for name in node.names:
-            mangled = self.scope.declare(name, node.var_type)
-            mangled_names.append(mangled)
-        node.names = mangled_names
+            try:
+                self.scope.declare(name, node.var_type)
+            except TypeError_ as e:
+                self.errors.append(str(e))
 
     def visit_Block(self, node: Block):
         self.scope.enter()
         for stmt in node.statements:
-            self.visit(stmt)
+            self._safe_visit(stmt)
         self.scope.exit()
 
     def visit_If(self, node: If):
-        cond_type = self.visit(node.condition)
-        if cond_type != "bool":
-            raise TypeError_(f"If condition must be bool, got '{cond_type}'")
-        self.visit(node.then_stmt)
+        cond_type = self._safe_visit(node.condition)
+        if cond_type is not None and cond_type != "bool":
+            self.errors.append(f"If condition must be bool, got '{cond_type}'")
+        self._safe_visit(node.then_stmt)
         if node.else_stmt is not None:
-            self.visit(node.else_stmt)
+            self._safe_visit(node.else_stmt)
 
     def visit_While(self, node: While):
-        cond_type = self.visit(node.condition)
-        if cond_type != "bool":
-            raise TypeError_(f"While condition must be bool, got '{cond_type}'")
-        self.visit(node.body)
+        cond_type = self._safe_visit(node.condition)
+        if cond_type is not None and cond_type != "bool":
+            self.errors.append(f"While condition must be bool, got '{cond_type}'")
+        self._safe_visit(node.body)
 
     def visit_Read(self, node: Read):
         for var in node.variables:
-            mangled, var_type = self.scope.lookup(var.name)
-            var.name = mangled
-            var.type = var_type
+            try:
+                var_type = self.scope.lookup(var.name)
+                var.type = var_type
+            except TypeError_ as e:
+                self.errors.append(str(e))
 
     def visit_Write(self, node: Write):
         for expr in node.expressions:
-            self.visit(expr)
+            self._safe_visit(expr)
 
     def visit_Assign(self, node: Assign):
         if not isinstance(node.target, Var):
             raise TypeError_("Left side of assignment must be a variable")
-        mangled, target_type = self.scope.lookup(node.target.name)
-        node.target.name = mangled
+        target_type = self.scope.lookup(node.target.name)
         node.target.type = target_type
         val_type = self.visit(node.value)
 
@@ -127,24 +136,20 @@ class TypeChecker:
     def visit_BinOp(self, node: BinOp):
         left_type = self.visit(node.left)
         right_type = self.visit(node.right)
-
         op = node.op
 
-        # Boolean operators
         if op in ("||", "&&"):
             if left_type != "bool" or right_type != "bool":
                 raise TypeError_(f"Operator '{op}' requires bool operands, got '{left_type}' and '{right_type}'")
             node.type = "bool"
             return "bool"
 
-        # Concatenation
         if op == ".":
             if left_type != "string" or right_type != "string":
                 raise TypeError_(f"Operator '.' requires string operands, got '{left_type}' and '{right_type}'")
             node.type = "string"
             return "string"
 
-        # Modulo - int only
         if op == "%":
             if left_type != "int" or right_type != "int":
                 raise TypeError_(f"Operator '%' requires int operands, got '{left_type}' and '{right_type}'")
@@ -160,32 +165,23 @@ class TypeChecker:
                 node.right = IntToFloat(node.right)
                 right_type = "float"
 
-        # Arithmetic: +, -, *, /
         if op in ("+", "-", "*", "/"):
-            if left_type not in ("int", "float") or right_type not in ("int", "float"):
-                raise TypeError_(f"Operator '{op}' requires numeric operands, got '{left_type}' and '{right_type}'")
-            if left_type != right_type:
-                raise TypeError_(f"Type mismatch for '{op}': '{left_type}' and '{right_type}'")
+            if left_type not in ("int", "float") or left_type != right_type:
+                raise TypeError_(f"Operator '{op}' requires matching numeric operands, got '{left_type}' and '{right_type}'")
             node.type = left_type
             return left_type
 
-        # Relational: <, >
         if op in ("<", ">"):
-            if left_type not in ("int", "float") or right_type not in ("int", "float"):
-                raise TypeError_(f"Operator '{op}' requires numeric operands, got '{left_type}' and '{right_type}'")
-            if left_type != right_type:
-                raise TypeError_(f"Type mismatch for '{op}': '{left_type}' and '{right_type}'")
+            if left_type not in ("int", "float") or left_type != right_type:
+                raise TypeError_(f"Operator '{op}' requires matching numeric operands, got '{left_type}' and '{right_type}'")
             node.type = "bool"
             return "bool"
 
-        # Equality: ==, !=
         if op in ("==", "!="):
             if left_type == "bool" or right_type == "bool":
                 raise TypeError_(f"Operator '{op}' cannot be used with bool operands")
-            if left_type not in ("int", "float", "string") or right_type not in ("int", "float", "string"):
-                raise TypeError_(f"Operator '{op}' requires int, float, or string operands")
-            if left_type != right_type:
-                raise TypeError_(f"Type mismatch for '{op}': '{left_type}' and '{right_type}'")
+            if left_type not in ("int", "float", "string") or left_type != right_type:
+                raise TypeError_(f"Operator '{op}' requires matching operands, got '{left_type}' and '{right_type}'")
             node.type = "bool"
             return "bool"
 
@@ -206,22 +202,14 @@ class TypeChecker:
         raise TypeError_(f"Unknown unary operator '{node.op}'")
 
     def visit_Var(self, node: Var):
-        mangled, var_type = self.scope.lookup(node.name)
-        node.name = mangled
+        var_type = self.scope.lookup(node.name)
         node.type = var_type
         return var_type
 
-    def visit_IntLit(self, node):
-        return "int"
-
-    def visit_FloatLit(self, node):
-        return "float"
-
-    def visit_BoolLit(self, node):
-        return "bool"
-
-    def visit_StrLit(self, node):
-        return "string"
+    def visit_IntLit(self, node):   return "int"
+    def visit_FloatLit(self, node): return "float"
+    def visit_BoolLit(self, node):  return "bool"
+    def visit_StrLit(self, node):   return "string"
 
     def visit_IntToFloat(self, node):
         return "float"
