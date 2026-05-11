@@ -1,5 +1,5 @@
 """
-PLC Compiler & Interpreter
+PLC Compiler & Interpreter (ANTLR-based)
 
 Usage:
   python3 main.py source.plc              compile and run immediately
@@ -8,19 +8,65 @@ Usage:
 """
 
 import sys
-from lexer import Lexer
-from parser import Parser
+from antlr4 import CommonTokenStream, InputStream
+from antlr4.error.ErrorListener import ErrorListener
+
+from PLCLexer import PLCLexer
+from PLCParser import PLCParser
+from ast_builder import ASTBuilder
 from typechecker import TypeChecker, TypeError_
 from codegen import CodeGen
 from interpreter import Interpreter, load_instructions
 
 
+class SyntaxErrorCollector(ErrorListener):
+    """Collects all ANTLR syntax errors instead of printing them immediately."""
+
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):
+        self.errors.append(f"Line {line}:{column} {msg}")
+
+
 def compile_source(source_path: str) -> list:
     """Compile a source file to a list of instructions."""
     source = open(source_path).read()
-    tokens = Lexer(source).tokenize()
-    ast = Parser(tokens).parse()
-    TypeChecker().check(ast)          # prints all type errors, then raises TypeError_
+
+    # Strip BOM if present
+    if source.startswith('\ufeff'):
+        source = source[1:]
+
+    # 1. Lexing + Parsing (ANTLR)
+    input_stream = InputStream(source)
+    lexer = PLCLexer(input_stream)
+    lexer.removeErrorListeners()
+    lex_errors = SyntaxErrorCollector()
+    lexer.addErrorListener(lex_errors)
+
+    token_stream = CommonTokenStream(lexer)
+    parser = PLCParser(token_stream)
+    parser.removeErrorListeners()
+    parse_errors = SyntaxErrorCollector()
+    parser.addErrorListener(parse_errors)
+
+    tree = parser.program()
+
+    # Report syntax errors and stop
+    all_syntax_errors = lex_errors.errors + parse_errors.errors
+    if all_syntax_errors:
+        for err in all_syntax_errors:
+            print(f"Syntax error: {err}", file=sys.stderr)
+        sys.exit(1)
+
+    # 2. Build AST from parse tree
+    ast = ASTBuilder().visit(tree)
+
+    # 3. Type checking (reports ALL type errors, then raises TypeError_)
+    TypeChecker().check(ast)
+
+    # 4. Code generation
     return CodeGen().generate(ast)
 
 
@@ -32,7 +78,6 @@ def main():
         sys.exit(1)
 
     if args[0] == "--compile":
-        # Compile source to instruction file (.ins)
         if len(args) < 2:
             print("Usage: python3 main.py --compile source.plc", file=sys.stderr)
             sys.exit(1)
@@ -44,7 +89,6 @@ def main():
         print(f"Compiled to {out_path}")
 
     elif args[0] == "--run":
-        # Run an instruction file directly
         if len(args) < 2:
             print("Usage: python3 main.py --run source.ins", file=sys.stderr)
             sys.exit(1)
@@ -52,7 +96,7 @@ def main():
         Interpreter(instructions).run()
 
     else:
-        # Default: compile source and run immediately (in memory)
+        # Default: compile and run
         instructions = compile_source(args[0])
         Interpreter(instructions).run()
 
@@ -61,7 +105,7 @@ if __name__ == "__main__":
     try:
         main()
     except TypeError_:
-        sys.exit(1)     # errors already printed by TypeChecker.check()
+        sys.exit(1)
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
