@@ -1,8 +1,7 @@
 """Converts ANTLR parse tree into our AST nodes (from ast_nodes.py).
 
 ANTLR generates a generic parse tree. This visitor walks it and builds
-the same AST that our hand-written parser.py used to produce, so the
-rest of the pipeline (typechecker, codegen, interpreter) stays unchanged.
+our AST, which the rest of the pipeline (typechecker, codegen, interpreter) uses.
 """
 
 from PLCParser import PLCParser

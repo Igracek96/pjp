@@ -1,6 +1,6 @@
 """AST node definitions. Pure data containers with no logic."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Any
 
 
